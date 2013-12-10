@@ -80,6 +80,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	bool error_usage = false;
 
 	wstring runtime, arch_subst, output;
+	bool load_pdb = false;
 
 	for (int i = 1; i < argc; ++i) {
 		if (_wcsicmp(argv[i], L"-a") == 0) {
@@ -88,6 +89,8 @@ int _tmain(int argc, _TCHAR* argv[])
 		} else if (_wcsicmp(argv[i], L"-o") == 0) {
 			if (((i + 1) < argc) && output.empty()) output = argv[++i];
 			else { error_usage = true; break; }
+		} else if (_wcsicmp(argv[i], L"-p") == 0) {
+			load_pdb = true;
 		} else {
 			if (runtime.empty()) runtime = argv[i];
 			else { error_usage = true; break; }
@@ -97,47 +100,44 @@ int _tmain(int argc, _TCHAR* argv[])
 	if (runtime.empty()) error_usage = true;
 
 	if (error_usage) {
-		printf_s(" Usage: fetchdac [-a <architecture>] [-o <directory>] <runtime.dll>\n\n");
+		printf_s(" Usage: fetchdac [-a <architecture>] [-o <directory>] [-p] <runtime.dll>\n\n");
 		printf_s("  <runtime.dll>\t: CLR runtime library (clr|coreclr|mrt100|slr100).dll\n");
 		printf_s("  -o\t\t: specify output directory, default is current\n");
 		printf_s("  -a\t\t: load DAC/SOS for specified architecture (arm|x86|amd64)\n");
+		printf_s("  -p\t\t: load PDB\n");
 		printf_s("  by default, fetchdac load same arch for x86/amd64 target, x86 for arm target\n\n");
 		return 0;
 	}
 
 	if (output.empty()) output = L'.'; // else check if its valid directory name ??
+
+	auto runtime_arch = get_file_arch(runtime);
+	if (runtime_arch.empty()) return 0; // error messages already printed
+
+	wstring load_arch;
+	if (arch_subst.empty()) { // user didn't specify, use default logic
+		if (runtime_arch == L"arm") load_arch = L"x86";
+		else load_arch = runtime_arch;
+	} else load_arch = arch_subst;
+
+	const auto runtime_version = get_file_version(runtime);
+
+	const auto filename = PathFindFileName(runtime.c_str());
+
+	printf_s(" Runtime Library: %S, Arch: %S, Version: %S\n", filename, runtime_arch.c_str(), runtime_version.c_str());
 	
 	//////////////////////////////////////////////////////////////////////////
 	// find out dac/sos request file name.
 
 	wstring dac, sos;
 
-	auto build_dac_sos = [&] (const wstring& dac_name, const wstring& sos_name) {
-		auto runtime_arch = get_file_arch(runtime);
-		if (runtime_arch.empty()) return;
+	const auto clr_suffix = L"_" + load_arch + L"_" + runtime_arch + L"_" + runtime_version + L".dll";
+	const auto mrt_suffix = L"_win" + load_arch + L".dll";
 
-		auto runtime_version = get_file_version(runtime);
-		if (runtime_version.empty()) return;
-
-		wstring arch;
-
-		if (arch_subst.empty()) { // user didn't specify, use default logic
-			if (runtime_arch == L"arm") arch = L"x86";
-			else arch = runtime_arch;
-		} else arch = arch_subst;
-
-		if ((!runtime_arch.empty()) && (!runtime_version.empty())) {
-			auto suffix = L"_" + arch + L"_" + runtime_arch + L"_" + runtime_version + L".dll";
-			dac = dac_name + suffix;
-			sos = sos_name + suffix;
-		}
-	};
-
-	auto filename = PathFindFileName(runtime.c_str());
-	if		(_wcsicmp(filename, L"clr.dll")		== 0) { build_dac_sos(L"mscordacwks", L"sos"); }
-	else if (_wcsicmp(filename, L"coreclr.dll")	== 0) { build_dac_sos(L"mscordaccore", L"sos"); }
-	else if (_wcsicmp(filename, L"slr100.dll")	== 0) { dac = L"slr100dac.dll"; sos = L"slr100sos.dll"; }
-	else if (_wcsicmp(filename, L"mrt100.dll")	== 0) { dac = L"mrt100dac.dll"; sos = L"mrt100sos.dll"; }
+	if		(_wcsnicmp(filename, L"clr", 3)		== 0) { dac = L"mscordacwks" + clr_suffix; sos = L"sos" + clr_suffix; }
+	else if (_wcsnicmp(filename, L"coreclr", 7) == 0) { dac = L"mscordaccore" + clr_suffix; sos = L"sos" + clr_suffix; }
+	else if (_wcsnicmp(filename, L"slr100", 6)	== 0) {	dac = L"slr100dac.dll";	sos = L"slr100sos.dll";	}
+	else if (_wcsnicmp(filename, L"mrt100", 6)	== 0) {	dac = L"mrt100dac" + mrt_suffix; sos = L"mrt100sos" + mrt_suffix; }
 
 	if (dac.empty() && sos.empty()) return 0;
 
@@ -165,10 +165,12 @@ int _tmain(int argc, _TCHAR* argv[])
 			printf_s("OK: %S\n", found_file);
 		} else printf_s("failed: %S\n", sos.c_str());
 
-// 		printf_s(" Load PDB ");
-// 		if (SymFindFileInPath(sym_handle, NULL, sii.pdbfile, &sii.guid, sii.age, 0, SSRVOPT_GUIDPTR, found_file, NULL, NULL) != FALSE) {
-// 			printf_s("OK: %S\n", found_file);
-// 		} else printf_s("failed: %S\n", sii.pdbfile);
+		if (load_pdb) {
+			printf_s(" Load PDB ");
+			if (SymFindFileInPath(sym_handle, NULL, sii.pdbfile, &sii.guid, sii.age, 0, SSRVOPT_GUIDPTR, found_file, NULL, NULL) != FALSE) {
+				printf_s("OK: %S\n", found_file);
+			} else printf_s("failed: %S\n", sii.pdbfile);
+		}
 
 		SymCleanup(sym_handle);
 	} else PrintLastError("SymInitialize failed");
